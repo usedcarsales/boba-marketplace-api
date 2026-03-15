@@ -8,8 +8,11 @@ settings = get_settings()
 engine = create_async_engine(
     settings.database_url,
     echo=False,
-    pool_size=5,
+    pool_size=3,
     max_overflow=2,
+    pool_timeout=30,
+    pool_recycle=300,
+    connect_args={"ssl": True} if "neon" in settings.database_url else {},
 )
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -32,5 +35,9 @@ async def get_db():
 
 
 async def init_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception as e:
+        print(f"Warning: init_db failed: {e}")
+        # Don't crash on startup if DB is already initialized
