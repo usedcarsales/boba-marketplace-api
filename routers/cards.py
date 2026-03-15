@@ -1,7 +1,7 @@
 import math
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -30,9 +30,23 @@ async def list_cards(
 ):
     query = select(Card)
 
-    # Filters
+    # Multi-word search: each word must match at least one field
     if q:
-        query = query.where(Card.name.ilike(f"%{q}%"))
+        words = q.strip().split()
+        for word in words:
+            pattern = f"%{word}%"
+            query = query.where(
+                or_(
+                    Card.name.ilike(pattern),
+                    Card.parallel.ilike(pattern),
+                    Card.weapon.ilike(pattern),
+                    Card.set_name.ilike(pattern),
+                    Card.card_number.ilike(pattern),
+                    Card.card_type.ilike(pattern),
+                    Card.athlete.ilike(pattern),
+                    Card.treatment.ilike(pattern),
+                )
+            )
     if set_name:
         query = query.where(Card.set_name == set_name)
     if card_type:
@@ -124,10 +138,28 @@ async def autocomplete(
     limit: int = Query(10, ge=1, le=50),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(Card.id, Card.name, Card.set_name, Card.card_number).where(Card.name.ilike(f"%{q}%")).limit(limit)
-    result = await db.execute(query)
+    # Multi-word autocomplete: each word narrows results across all searchable fields
+    base_query = select(Card.id, Card.name, Card.set_name, Card.card_number, Card.parallel, Card.weapon)
+    words = q.strip().split()
+    for word in words:
+        pattern = f"%{word}%"
+        base_query = base_query.where(
+            or_(
+                Card.name.ilike(pattern),
+                Card.parallel.ilike(pattern),
+                Card.weapon.ilike(pattern),
+                Card.set_name.ilike(pattern),
+                Card.card_number.ilike(pattern),
+                Card.athlete.ilike(pattern),
+            )
+        )
+    base_query = base_query.limit(limit)
+    result = await db.execute(base_query)
     rows = result.all()
-    return [{"id": str(r.id), "name": r.name, "set": r.set_name, "number": r.card_number} for r in rows]
+    return [
+        {"id": str(r.id), "name": r.name, "set": r.set_name, "number": r.card_number, "parallel": r.parallel, "weapon": r.weapon}
+        for r in rows
+    ]
 
 
 @router.get("/{card_id}", response_model=CardResponse)
