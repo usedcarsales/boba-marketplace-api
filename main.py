@@ -63,31 +63,42 @@ async def health():
 @app.get("/debug/db")
 async def debug_db():
     """Debug database connection."""
+    import socket
+    import os
+    results = {}
+    
+    # Check env var
+    db_url = os.environ.get("DATABASE_URL", "NOT SET")
+    results["db_url_set"] = db_url[:30] + "..." if len(db_url) > 30 else db_url
+    
+    # DNS resolve
+    host = "ep-shiny-hall-antdzo3i-pooler.c-6.us-east-1.aws.neon.tech"
+    try:
+        ip = socket.getaddrinfo(host, 5432)
+        results["dns"] = str(ip[0][4])
+    except Exception as e:
+        results["dns_error"] = str(e)
+    
+    # TCP connect
+    try:
+        s = socket.create_connection((host, 5432), timeout=10)
+        results["tcp"] = "connected"
+        s.close()
+    except Exception as e:
+        results["tcp_error"] = str(e)
+    
+    # SQLAlchemy connect
     from database import engine
     try:
         async with engine.connect() as conn:
-            result = await conn.execute(text("SELECT current_database(), current_user, version()"))
+            result = await conn.execute(text("SELECT current_database(), current_user"))
             row = result.fetchone()
+            results["db"] = {"database": row[0], "user": row[1]}
             
-            # Check tables
-            tables_result = await conn.execute(text(
-                "SELECT table_name FROM information_schema.tables WHERE table_schema='public'"
-            ))
-            tables = [r[0] for r in tables_result.fetchall()]
-            
-            # Count cards
-            if 'cards' in tables:
-                count_result = await conn.execute(text("SELECT COUNT(*) FROM cards"))
-                card_count = count_result.scalar()
-            else:
-                card_count = "table not found"
-            
-            return {
-                "database": row[0],
-                "user": row[1],
-                "version": row[2][:50],
-                "tables": tables,
-                "card_count": card_count,
-            }
+            count_result = await conn.execute(text("SELECT COUNT(*) FROM cards"))
+            results["card_count"] = count_result.scalar()
     except Exception as e:
-        return {"error": str(e), "type": type(e).__name__}
+        results["db_error"] = str(e)
+        results["db_error_type"] = type(e).__name__
+    
+    return results
