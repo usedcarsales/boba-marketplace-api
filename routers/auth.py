@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy import select
@@ -15,6 +16,7 @@ from schemas.auth import LoginRequest, RefreshRequest, RegisterRequest, TokenRes
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 settings = get_settings()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 
 def hash_password(password: str) -> str:
@@ -40,10 +42,10 @@ def create_refresh_token(data: dict) -> str:
 
 
 async def get_current_user(
-    token: str = Depends(lambda: None),  # Will be replaced by proper OAuth2 scheme
+    token: str | None = Depends(oauth2_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    """Extract user from JWT token. Used as a dependency."""
+    """Extract user from JWT Bearer token."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -65,6 +67,25 @@ async def get_current_user(
     if user is None:
         raise credentials_exception
     return user
+
+
+async def get_current_user_optional(
+    token: str | None = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """Like get_current_user but returns None instead of 401 if not authenticated."""
+    if token is None:
+        return None
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+        user_id: str = payload.get("sub")
+        token_type: str = payload.get("type")
+        if user_id is None or token_type != "access":
+            return None
+    except JWTError:
+        return None
+    result = await db.execute(select(User).where(User.id == UUID(user_id)))
+    return result.scalar_one_or_none()
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -128,6 +149,24 @@ async def refresh(req: RefreshRequest, db: AsyncSession = Depends(get_db)):
     new_refresh_token = create_refresh_token(data={"sub": str(user.id)})
 
     return TokenResponse(access_token=access_token, refresh_token=new_refresh_token)
+
+
+@router.get("/me")
+async def get_me(current_user: User = Depends(get_current_user)):
+    """Get current authenticated user profile."""
+    return {
+        "id": str(current_user.id),
+        "email": current_user.email,
+        "username": current_user.username,
+        "display_name": current_user.display_name,
+        "avatar_url": current_user.avatar_url,
+        "role": current_user.role,
+        "stripe_onboarding_complete": current_user.stripe_onboarding_complete,
+        "total_sales": current_user.total_sales,
+        "total_purchases": current_user.total_purchases,
+        "rating": float(current_user.rating) if current_user.rating else 0,
+        "created_at": current_user.created_at.isoformat(),
+    }
 
 
 @router.post("/logout")
