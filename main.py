@@ -97,6 +97,13 @@ async def debug_db():
             
             count_result = await conn.execute(text("SELECT COUNT(*) FROM cards"))
             results["card_count"] = count_result.scalar()
+            
+            user_result = await conn.execute(text("SELECT COUNT(*) FROM users"))
+            results["user_count"] = user_result.scalar()
+            
+            # List users (just username + email, no passwords)
+            users_result = await conn.execute(text("SELECT username, email, display_name, created_at FROM users ORDER BY created_at"))
+            results["users"] = [{"username": r[0], "email": r[1], "display_name": r[2], "created_at": str(r[3])} for r in users_result.fetchall()]
     except Exception as e:
         results["db_error"] = str(e)
         results["db_error_type"] = type(e).__name__

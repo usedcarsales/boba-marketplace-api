@@ -130,28 +130,43 @@ async def create_listing(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    listing = Listing(
-        seller_id=current_user.id,
-        card_id=data.card_id,
-        title=data.title,
-        description=data.description,
-        condition=data.condition,
-        price_cents=data.price_cents,
-        quantity=data.quantity,
-        quantity_available=data.quantity,
-    )
-    db.add(listing)
-    await db.flush()
+    try:
+        # Verify card exists
+        from models.card import Card
+        card_result = await db.execute(select(Card).where(Card.id == data.card_id))
+        card = card_result.scalar_one_or_none()
+        if not card:
+            raise HTTPException(status_code=404, detail="Card not found")
 
-    # Reload with relationships
-    query = (
-        select(Listing)
-        .where(Listing.id == listing.id)
-        .options(selectinload(Listing.seller), selectinload(Listing.card), selectinload(Listing.images))
-    )
-    result = await db.execute(query)
-    listing = result.scalar_one()
-    return ListingResponse.model_validate(listing)
+        # Auto-generate title from card if not provided
+        title = data.title or f"{card.name} — {card.parallel or card.card_type} [{data.condition}]"
+
+        listing = Listing(
+            seller_id=current_user.id,
+            card_id=data.card_id,
+            title=title,
+            description=data.description,
+            condition=data.condition,
+            price_cents=data.price_cents,
+            quantity=data.quantity,
+            quantity_available=data.quantity,
+        )
+        db.add(listing)
+        await db.flush()
+
+        # Reload with relationships
+        query = (
+            select(Listing)
+            .where(Listing.id == listing.id)
+            .options(selectinload(Listing.seller), selectinload(Listing.card), selectinload(Listing.images))
+        )
+        result = await db.execute(query)
+        listing = result.scalar_one()
+        return ListingResponse.model_validate(listing)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create listing: {type(e).__name__}: {str(e)}")
 
 
 @router.put("/{listing_id}", response_model=ListingResponse)

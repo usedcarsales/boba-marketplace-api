@@ -9,9 +9,9 @@ from schemas.user import UserPublicResponse
 
 class ListingCreate(BaseModel):
     card_id: UUID
-    title: str
+    title: str | None = None
     description: str | None = None
-    condition: str  # Mint, Near Mint, Lightly Played, Moderately Played, Heavily Played, Damaged
+    condition: str = "NM"  # NM, LP, MP, HP, DMG
     price_cents: int
     quantity: int = 1
 
