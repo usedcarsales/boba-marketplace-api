@@ -90,29 +90,34 @@ async def get_current_user_optional(
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
-    # Check existing email
-    result = await db.execute(select(User).where(User.email == req.email))
-    if result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Email already registered")
+    try:
+        # Check existing email
+        result = await db.execute(select(User).where(User.email == req.email))
+        if result.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Email already registered")
 
-    # Check existing username
-    result = await db.execute(select(User).where(User.username == req.username))
-    if result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Username already taken")
+        # Check existing username
+        result = await db.execute(select(User).where(User.username == req.username))
+        if result.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Username already taken")
 
-    user = User(
-        email=req.email,
-        username=req.username,
-        hashed_password=hash_password(req.password),
-        display_name=req.display_name or req.username,
-    )
-    db.add(user)
-    await db.flush()
+        user = User(
+            email=req.email,
+            username=req.username,
+            hashed_password=hash_password(req.password),
+            display_name=req.display_name or req.username,
+        )
+        db.add(user)
+        await db.flush()
 
-    access_token = create_access_token(data={"sub": str(user.id)})
-    refresh_token = create_refresh_token(data={"sub": str(user.id)})
+        access_token = create_access_token(data={"sub": str(user.id)})
+        refresh_token = create_refresh_token(data={"sub": str(user.id)})
 
-    return TokenResponse(access_token=access_token, refresh_token=refresh_token)
+        return TokenResponse(access_token=access_token, refresh_token=refresh_token)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Registration failed: {type(e).__name__}: {str(e)}")
 
 
 @router.post("/login", response_model=TokenResponse)
