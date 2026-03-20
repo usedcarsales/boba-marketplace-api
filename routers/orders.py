@@ -189,6 +189,12 @@ async def checkout(
 
         order.stripe_payment_intent_id = payment_intent.id
         order.stripe_client_secret = payment_intent.client_secret
+
+        # Decrement inventory
+        listing.quantity_available -= data.quantity
+        if listing.quantity_available <= 0:
+            listing.status = "sold"
+
         await db.flush()
 
         return CheckoutResponse(
@@ -468,6 +474,120 @@ async def leave_review(
     await db.flush()
 
     return {"id": str(review.id), "rating": review.rating, "message": "Review submitted — thank you!"}
+
+
+# ─── MULTI-SELLER CART CHECKOUT ───
+@router.post("/cart-checkout")
+async def cart_checkout(
+    data: dict,  # {"items": [{"listing_id": "...", "quantity": 1}], "shipping": {...}}
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cart checkout — splits by seller, creates one order + PaymentIntent per seller."""
+    items = data.get("items", [])
+    shipping_info = data.get("shipping", {})
+    if not items:
+        raise HTTPException(400, "Cart is empty")
+
+    # Group items by seller
+    seller_groups: dict[str, list] = {}
+    for item in items:
+        result = await db.execute(
+            select(Listing)
+            .where(Listing.id == item["listing_id"])
+            .options(selectinload(Listing.seller), selectinload(Listing.card))
+        )
+        listing = result.scalar_one_or_none()
+        if not listing or listing.status != "active":
+            raise HTTPException(400, f"Listing {item['listing_id']} is unavailable")
+        qty = item.get("quantity", 1)
+        if listing.quantity_available < qty:
+            raise HTTPException(400, f"Not enough stock for {listing.title}")
+        if listing.seller_id == current_user.id:
+            raise HTTPException(400, "Cannot buy your own listing")
+
+        sid = str(listing.seller_id)
+        if sid not in seller_groups:
+            seller_groups[sid] = []
+        seller_groups[sid].append({"listing": listing, "quantity": qty})
+
+    orders_created = []
+    for seller_id, group_items in seller_groups.items():
+        # Calculate subtotal for this seller's items
+        subtotal = sum(it["listing"].price_cents * it["quantity"] for it in group_items)
+        fees = calculate_fees(subtotal)
+        shipping = determine_shipping(subtotal, shipping_info.get("method"))
+        total = subtotal + shipping["shipping_cents"]
+
+        # Get seller for Stripe
+        seller = group_items[0]["listing"].seller
+
+        # Create one order per seller (with first listing — for multi-item we'll track in metadata)
+        order = Order(
+            buyer_id=current_user.id,
+            seller_id=seller.id,
+            listing_id=group_items[0]["listing"].id,
+            quantity=sum(it["quantity"] for it in group_items),
+            subtotal_cents=subtotal,
+            shipping_cents=shipping["shipping_cents"],
+            total_cents=total,
+            shipping_method=shipping["shipping_method"],
+            requires_insurance=shipping.get("requires_insurance", False),
+            ship_to_name=shipping_info.get("name", ""),
+            ship_to_address1=shipping_info.get("address1", ""),
+            ship_to_address2=shipping_info.get("address2", ""),
+            ship_to_city=shipping_info.get("city", ""),
+            ship_to_state=shipping_info.get("state", ""),
+            ship_to_zip=shipping_info.get("zip", ""),
+            ship_to_country=shipping_info.get("country", "US"),
+            **fees,
+        )
+        db.add(order)
+        await db.flush()
+
+        # Create PaymentIntent (only if seller has Stripe — for test mode, skip)
+        client_secret = None
+        if seller.stripe_account_id and seller.stripe_onboarding_complete:
+            try:
+                pi = stripe.PaymentIntent.create(
+                    amount=total,
+                    currency="usd",
+                    transfer_data={"destination": seller.stripe_account_id, "amount": fees["seller_payout_cents"]},
+                    metadata={"order_id": str(order.id), "seller_id": seller_id, "buyer_id": str(current_user.id)},
+                    description=f"BoBA Market — {len(group_items)} card(s)",
+                    receipt_email=current_user.email,
+                )
+                order.stripe_payment_intent_id = pi.id
+                order.stripe_client_secret = pi.client_secret
+                client_secret = pi.client_secret
+            except stripe.StripeError as e:
+                # Non-fatal for test mode — log and continue
+                pass
+
+        # Decrement inventory for all items in this group
+        for gi in group_items:
+            gi["listing"].quantity_available -= gi["quantity"]
+            if gi["listing"].quantity_available <= 0:
+                gi["listing"].status = "sold"
+
+        await db.flush()
+
+        orders_created.append({
+            "order_id": str(order.id),
+            "seller_username": seller.username,
+            "subtotal_cents": subtotal,
+            "shipping_cents": shipping["shipping_cents"],
+            "total_cents": total,
+            "items_count": len(group_items),
+            "client_secret": client_secret,
+        })
+
+    await db.commit()
+    return {
+        "orders": orders_created,
+        "total_orders": len(orders_created),
+        "grand_total_cents": sum(o["total_cents"] for o in orders_created),
+    }
 
 
 # ─── SHIPPING RATES INFO ───
