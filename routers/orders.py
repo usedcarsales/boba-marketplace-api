@@ -35,8 +35,10 @@ SHIPPING_RATES = {
     "bubble_mailer": {"label": "Bubble Mailer w/ Tracking", "cents": 400, "max_value_cents": 50000},
     "box": {"label": "Small Box w/ Tracking + Insurance", "cents": 800, "max_value_cents": None},
 }
-INSURANCE_REQUIRED_ABOVE_CENTS = 5000  # $50+
-TRACKING_REQUIRED_ABOVE_CENTS = 2000   # $20+
+INSURANCE_REQUIRED_ABOVE_CENTS = 5000   # $50+
+TRACKING_REQUIRED_ABOVE_CENTS = 1000   # $10+ (matches TCGPlayer)
+SIGNATURE_REQUIRED_ABOVE_CENTS = 75000 # $750+ (matches eBay seller protection)
+DISPUTE_WINDOW_DAYS = 7                # 7 days post-delivery (TCGPlayer standard)
 
 
 def calculate_fees(subtotal_cents: int) -> dict:
@@ -281,7 +283,11 @@ async def ship_order(
 
     # Validate tracking requirement
     if order.subtotal_cents >= TRACKING_REQUIRED_ABOVE_CENTS and not data.tracking_number:
-        raise HTTPException(status_code=400, detail="Tracking number required for orders $20+")
+        raise HTTPException(status_code=400, detail=f"Tracking number required for orders ${TRACKING_REQUIRED_ABOVE_CENTS/100:.0f}+")
+
+    # Validate signature confirmation for high-value orders
+    if order.subtotal_cents >= SIGNATURE_REQUIRED_ABOVE_CENTS and not data.tracking_number:
+        raise HTTPException(status_code=400, detail=f"Tracking with signature confirmation required for orders ${SIGNATURE_REQUIRED_ABOVE_CENTS/100:.0f}+")
 
     now = datetime.now(timezone.utc)
     order.tracking_number = data.tracking_number
@@ -384,11 +390,11 @@ async def open_dispute(
     if order.status not in ("shipped", "delivered"):
         raise HTTPException(status_code=400, detail="Can only dispute shipped or delivered orders")
 
-    # Check 48hr window after delivery
+    # Check dispute window after delivery
     if order.delivered_at:
-        window = order.delivered_at + timedelta(hours=48)
+        window = order.delivered_at + timedelta(days=DISPUTE_WINDOW_DAYS)
         if datetime.now(timezone.utc) > window:
-            raise HTTPException(status_code=400, detail="Dispute window has closed (48 hours after delivery)")
+            raise HTTPException(status_code=400, detail=f"Dispute window has closed ({DISPUTE_WINDOW_DAYS} days after delivery)")
 
     dispute = Dispute(
         order_id=order.id,
@@ -475,5 +481,7 @@ async def get_shipping_rates():
         "rules": {
             "tracking_required_above_cents": TRACKING_REQUIRED_ABOVE_CENTS,
             "insurance_required_above_cents": INSURANCE_REQUIRED_ABOVE_CENTS,
+            "signature_required_above_cents": SIGNATURE_REQUIRED_ABOVE_CENTS,
+            "dispute_window_days": DISPUTE_WINDOW_DAYS,
         },
     }
