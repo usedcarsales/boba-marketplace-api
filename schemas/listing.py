@@ -14,6 +14,7 @@ class ListingCreate(BaseModel):
     condition: str = "NM"  # NM, LP, MP, HP, DMG
     price_cents: int
     quantity: int = 1
+    source: str = "manual"  # manual, discord_pipeline, bulk_import
 
 
 class ListingUpdate(BaseModel):
@@ -46,6 +47,7 @@ class ListingResponse(BaseModel):
     is_featured: bool
     status: str
     views: int
+    source: str = "manual"
     created_at: datetime
     updated_at: datetime
 

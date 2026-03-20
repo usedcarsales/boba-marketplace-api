@@ -43,9 +43,13 @@ INSURANCE_RECOMMENDED_ABOVE_CENTS = 5000  # $50+ → insurance recommended
 DISPUTE_WINDOW_DAYS = 7                # 7 days post-delivery (TCGPlayer standard)
 
 
-def calculate_fees(subtotal_cents: int) -> dict:
-    """Calculate platform fee, per-order fee, Stripe fee, and seller payout."""
-    platform_fee = int(subtotal_cents * settings.platform_fee_percent / 100)
+def calculate_fees(subtotal_cents: int, fee_percent: float | None = None) -> dict:
+    """Calculate platform fee, per-order fee, Stripe fee, and seller payout.
+    
+    fee_percent: Override for tier-based fees. Defaults to settings.platform_fee_percent (8%).
+    """
+    rate = fee_percent if fee_percent is not None else settings.platform_fee_percent
+    platform_fee = int(subtotal_cents * rate / 100)
     order_fee = settings.per_order_fee_cents  # $0.25 flat
     stripe_fee = int(subtotal_cents * 0.029 + 30)  # 2.9% + 30¢
     total_fees = platform_fee + order_fee + stripe_fee
@@ -55,6 +59,7 @@ def calculate_fees(subtotal_cents: int) -> dict:
         "order_fee_cents": order_fee,
         "stripe_fee_cents": stripe_fee,
         "seller_payout_cents": max(seller_payout, 0),
+        "fee_percent_applied": rate,
     }
 
 

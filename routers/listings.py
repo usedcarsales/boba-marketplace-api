@@ -2,13 +2,15 @@ import math
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db
 from models.listing import Listing
 from models.user import User
+from models.seller_tier import SellerProfile, SellerTier, TIER_CONFIG, evaluate_tier
 from routers.auth import get_current_user
 from schemas.listing import ListingCreate, ListingListResponse, ListingResponse, ListingUpdate
 
@@ -141,6 +143,28 @@ async def create_listing(
         # Auto-generate title from card if not provided
         title = data.title or f"{card.name} — {card.parallel or card.card_type} [{data.condition}]"
 
+        # Check listing slot limit based on seller tier
+        profile_result = await db.execute(
+            select(SellerProfile).where(SellerProfile.user_id == current_user.id)
+        )
+        profile = profile_result.scalar_one_or_none()
+        if profile:
+            tier = SellerTier(profile.tier)
+            max_slots = TIER_CONFIG[tier]["max_listing_slots"]
+            if max_slots is not None:
+                active_count_result = await db.execute(
+                    select(func.count(Listing.id)).where(
+                        and_(Listing.seller_id == current_user.id, Listing.status == "active")
+                    )
+                )
+                active_count = active_count_result.scalar() or 0
+                if active_count >= max_slots:
+                    raise HTTPException(
+                        400,
+                        f"Listing limit reached ({max_slots} for {TIER_CONFIG[tier]['display_name']} tier). "
+                        f"Upgrade your seller tier for more slots!"
+                    )
+
         listing = Listing(
             seller_id=current_user.id,
             card_id=data.card_id,
@@ -150,6 +174,7 @@ async def create_listing(
             price_cents=data.price_cents,
             quantity=data.quantity,
             quantity_available=data.quantity,
+            source=getattr(data, "source", "manual"),
         )
         db.add(listing)
         await db.flush()
@@ -205,3 +230,148 @@ async def delete_listing(
 
     listing.status = "removed"
     await db.flush()
+
+
+# --- Inventory Management Endpoints ---
+
+class BulkPriceUpdate(BaseModel):
+    listing_ids: list[str]
+    adjustment_type: str = Field(description="'set', 'increase_percent', 'decrease_percent', 'increase_cents', 'decrease_cents'")
+    value: int  # cents for set/increase_cents/decrease_cents, basis points for percent (e.g., 1000 = 10%)
+
+
+class BulkStatusUpdate(BaseModel):
+    listing_ids: list[str]
+    status: str = Field(description="'active', 'paused', 'removed'")
+
+
+class InventoryStats(BaseModel):
+    active_listings: int
+    paused_listings: int
+    sold_listings: int
+    total_inventory_value_cents: int
+    total_views: int
+    listing_slot_limit: int | None
+    listing_slots_used: int
+    seller_tier: str
+    seller_tier_emoji: str
+
+
+@router.get("/inventory/stats", response_model=InventoryStats)
+async def get_inventory_stats(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get seller's inventory overview stats."""
+    uid = current_user.id
+
+    # Counts by status
+    active = (await db.execute(
+        select(func.count(Listing.id)).where(and_(Listing.seller_id == uid, Listing.status == "active"))
+    )).scalar() or 0
+    paused = (await db.execute(
+        select(func.count(Listing.id)).where(and_(Listing.seller_id == uid, Listing.status == "paused"))
+    )).scalar() or 0
+    sold = (await db.execute(
+        select(func.count(Listing.id)).where(and_(Listing.seller_id == uid, Listing.status == "sold"))
+    )).scalar() or 0
+
+    # Total value of active inventory
+    value = (await db.execute(
+        select(func.sum(Listing.price_cents * Listing.quantity_available)).where(
+            and_(Listing.seller_id == uid, Listing.status == "active")
+        )
+    )).scalar() or 0
+
+    # Total views
+    views = (await db.execute(
+        select(func.sum(Listing.views)).where(Listing.seller_id == uid)
+    )).scalar() or 0
+
+    # Tier info
+    profile = (await db.execute(
+        select(SellerProfile).where(SellerProfile.user_id == uid)
+    )).scalar_one_or_none()
+
+    tier = SellerTier(profile.tier) if profile else SellerTier.RECRUIT
+    config = TIER_CONFIG[tier]
+
+    return InventoryStats(
+        active_listings=active,
+        paused_listings=paused,
+        sold_listings=sold,
+        total_inventory_value_cents=value,
+        total_views=views,
+        listing_slot_limit=config["max_listing_slots"],
+        listing_slots_used=active,
+        seller_tier=config["display_name"],
+        seller_tier_emoji=config["emoji"],
+    )
+
+
+@router.post("/inventory/bulk-price")
+async def bulk_update_prices(
+    data: BulkPriceUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bulk update prices for multiple listings."""
+    updated = 0
+    errors = []
+
+    for lid in data.listing_ids:
+        result = await db.execute(select(Listing).where(Listing.id == lid))
+        listing = result.scalar_one_or_none()
+        if not listing:
+            errors.append(f"{lid}: not found")
+            continue
+        if str(listing.seller_id) != current_user.id:
+            errors.append(f"{lid}: not your listing")
+            continue
+
+        if data.adjustment_type == "set":
+            listing.price_cents = max(1, data.value)
+        elif data.adjustment_type == "increase_percent":
+            listing.price_cents = int(listing.price_cents * (1 + data.value / 10000))
+        elif data.adjustment_type == "decrease_percent":
+            listing.price_cents = max(1, int(listing.price_cents * (1 - data.value / 10000)))
+        elif data.adjustment_type == "increase_cents":
+            listing.price_cents += data.value
+        elif data.adjustment_type == "decrease_cents":
+            listing.price_cents = max(1, listing.price_cents - data.value)
+        else:
+            errors.append(f"{lid}: invalid adjustment type")
+            continue
+        updated += 1
+
+    await db.flush()
+    return {"updated": updated, "errors": errors}
+
+
+@router.post("/inventory/bulk-status")
+async def bulk_update_status(
+    data: BulkStatusUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bulk update status for multiple listings (pause, reactivate, remove)."""
+    if data.status not in ("active", "paused", "removed"):
+        raise HTTPException(400, "Status must be 'active', 'paused', or 'removed'")
+
+    updated = 0
+    errors = []
+
+    for lid in data.listing_ids:
+        result = await db.execute(select(Listing).where(Listing.id == lid))
+        listing = result.scalar_one_or_none()
+        if not listing:
+            errors.append(f"{lid}: not found")
+            continue
+        if str(listing.seller_id) != current_user.id:
+            errors.append(f"{lid}: not your listing")
+            continue
+        listing.status = data.status
+        updated += 1
+
+    await db.flush()
+    return {"updated": updated, "errors": errors}

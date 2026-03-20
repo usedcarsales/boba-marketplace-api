@@ -6,7 +6,7 @@ from sqlalchemy import text
 
 from config import get_settings
 from database import init_db
-from routers import auth, cards, listings, orders, seller, users, webhooks
+from routers import auth, cards, listings, orders, seller, seller_tier, users, webhooks, feedback
 
 settings = get_settings()
 
@@ -43,6 +43,8 @@ app.include_router(orders.router)
 app.include_router(users.router)
 app.include_router(seller.router)
 app.include_router(webhooks.router)
+app.include_router(seller_tier.router)
+app.include_router(feedback.router)
 
 
 @app.get("/")
@@ -150,5 +152,74 @@ async def migrate_orders():
                 except Exception as e:
                     results.append({"sql": sql[:60] + "...", "status": f"error: {e}"})
         return {"status": "migrated", "results": results}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@app.post("/debug/migrate-v3")
+async def migrate_v3():
+    """Create seller_profiles, feedback tables and add source column to listings."""
+    from database import engine
+    migrations = [
+        # Seller profiles table
+        """CREATE TABLE IF NOT EXISTS seller_profiles (
+            id UUID PRIMARY KEY,
+            user_id UUID UNIQUE NOT NULL REFERENCES users(id),
+            tier VARCHAR(20) NOT NULL DEFAULT 'recruit',
+            rolling_30d_volume_cents INTEGER DEFAULT 0,
+            total_sales_count INTEGER DEFAULT 0,
+            total_sales_volume_cents INTEGER DEFAULT 0,
+            active_listing_count INTEGER DEFAULT 0,
+            avg_rating FLOAT,
+            total_ratings INTEGER DEFAULT 0,
+            avg_shipping_stars FLOAT,
+            avg_condition_stars FLOAT,
+            avg_comms_stars FLOAT,
+            avg_accuracy_stars FLOAT,
+            bio TEXT,
+            banner_url VARCHAR(500),
+            stripe_account_id VARCHAR(255),
+            stripe_onboarded BOOLEAN DEFAULT FALSE,
+            tier_upgraded_at TIMESTAMP,
+            tier_grace_deadline TIMESTAMP,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )""",
+        # Feedback table
+        """CREATE TABLE IF NOT EXISTS feedback (
+            id UUID PRIMARY KEY,
+            order_id UUID UNIQUE NOT NULL REFERENCES orders(id),
+            buyer_id UUID NOT NULL REFERENCES users(id),
+            seller_id UUID NOT NULL REFERENCES users(id),
+            overall_stars INTEGER NOT NULL CHECK (overall_stars >= 1 AND overall_stars <= 5),
+            shipping_stars INTEGER CHECK (shipping_stars IS NULL OR (shipping_stars >= 1 AND shipping_stars <= 5)),
+            condition_stars INTEGER CHECK (condition_stars IS NULL OR (condition_stars >= 1 AND condition_stars <= 5)),
+            comms_stars INTEGER CHECK (comms_stars IS NULL OR (comms_stars >= 1 AND comms_stars <= 5)),
+            accuracy_stars INTEGER CHECK (accuracy_stars IS NULL OR (accuracy_stars >= 1 AND accuracy_stars <= 5)),
+            comment TEXT,
+            seller_response TEXT,
+            response_at TIMESTAMP,
+            is_visible BOOLEAN DEFAULT TRUE,
+            moderation_flag BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT NOW()
+        )""",
+        # Add source column to listings
+        "ALTER TABLE listings ADD COLUMN IF NOT EXISTS source VARCHAR(50) DEFAULT 'manual'",
+        # Indexes
+        "CREATE INDEX IF NOT EXISTS idx_feedback_seller_id ON feedback(seller_id)",
+        "CREATE INDEX IF NOT EXISTS idx_feedback_buyer_id ON feedback(buyer_id)",
+        "CREATE INDEX IF NOT EXISTS idx_seller_profiles_user_id ON seller_profiles(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_listings_source ON listings(source)",
+    ]
+    results = []
+    try:
+        async with engine.begin() as conn:
+            for sql in migrations:
+                try:
+                    await conn.execute(text(sql))
+                    results.append({"sql": sql[:80] + "...", "status": "ok"})
+                except Exception as e:
+                    results.append({"sql": sql[:80] + "...", "status": f"error: {e}"})
+        return {"status": "migrated", "count": len(results), "results": results}
     except Exception as e:
         return {"status": "error", "error": str(e)}

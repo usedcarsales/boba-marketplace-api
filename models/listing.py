@@ -25,6 +25,7 @@ class Listing(Base):
     is_featured: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(20), default="active", index=True)  # active, sold, expired, removed
     views: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(50), default="manual")  # manual, discord_pipeline, bulk_import
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
