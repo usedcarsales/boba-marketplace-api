@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 from database import get_db
 from models.listing import Listing
 from models.user import User
-from models.seller_tier import SellerProfile, SellerTier, TIER_CONFIG, evaluate_tier
+from models.seller_tier import SellerProfile, SellerTier, TIER_CONFIG, evaluate_tier, has_bulk_listing
 from routers.auth import get_current_user
 from schemas.listing import ListingCreate, ListingListResponse, ListingResponse, ListingUpdate
 
@@ -293,7 +293,7 @@ async def get_inventory_stats(
         select(SellerProfile).where(SellerProfile.user_id == uid)
     )).scalar_one_or_none()
 
-    tier = SellerTier(profile.tier) if profile else SellerTier.RECRUIT
+    tier = SellerTier(profile.tier) if profile else SellerTier.STEEL
     config = TIER_CONFIG[tier]
 
     return InventoryStats(
@@ -375,3 +375,101 @@ async def bulk_update_status(
 
     await db.flush()
     return {"updated": updated, "errors": errors}
+
+
+# --- Bulk Listing Tool (Fire+ tier) ---
+
+class BulkListingItem(BaseModel):
+    card_id: str
+    condition: str = "NM"
+    price_cents: int
+    quantity: int = 1
+    description: str | None = None
+
+
+class BulkListingRequest(BaseModel):
+    listings: list[BulkListingItem] = Field(max_length=50, description="Up to 50 listings per batch")
+    source: str = "manual"
+
+
+@router.post("/bulk-create")
+async def bulk_create_listings(
+    data: BulkListingRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create multiple listings in one batch. Requires Fire tier or higher."""
+    from models.card import Card
+
+    # Check tier access
+    profile_result = await db.execute(
+        select(SellerProfile).where(SellerProfile.user_id == current_user.id)
+    )
+    profile = profile_result.scalar_one_or_none()
+    tier = SellerTier(profile.tier) if profile else SellerTier.STEEL
+    
+    if not has_bulk_listing(tier):
+        raise HTTPException(
+            403,
+            f"Bulk listing requires Fire tier or higher. You are currently {TIER_CONFIG[tier]['display_name']}. "
+            f"Reach $100 in 30-day sales volume to unlock!"
+        )
+
+    # Check slot limits
+    max_slots = TIER_CONFIG[tier]["max_listing_slots"]
+    if max_slots is not None:
+        active_count = (await db.execute(
+            select(func.count(Listing.id)).where(
+                and_(Listing.seller_id == current_user.id, Listing.status == "active")
+            )
+        )).scalar() or 0
+        remaining = max_slots - active_count
+        if len(data.listings) > remaining:
+            raise HTTPException(
+                400,
+                f"Not enough listing slots. You have {remaining} remaining "
+                f"({active_count}/{max_slots} used). Upgrade your tier for more!"
+            )
+
+    created = []
+    errors = []
+
+    for i, item in enumerate(data.listings):
+        try:
+            # Verify card exists
+            card_result = await db.execute(select(Card).where(Card.id == item.card_id))
+            card = card_result.scalar_one_or_none()
+            if not card:
+                errors.append({"index": i, "card_id": item.card_id, "error": "Card not found"})
+                continue
+
+            title = f"{card.name} — {card.parallel or card.card_type} [{item.condition}]"
+            listing = Listing(
+                seller_id=current_user.id,
+                card_id=item.card_id,
+                title=title,
+                description=item.description,
+                condition=item.condition,
+                price_cents=item.price_cents,
+                quantity=item.quantity,
+                quantity_available=item.quantity,
+                source=data.source,
+            )
+            db.add(listing)
+            await db.flush()
+            created.append({
+                "index": i,
+                "listing_id": str(listing.id),
+                "title": title,
+                "price_cents": item.price_cents,
+            })
+        except Exception as e:
+            errors.append({"index": i, "card_id": item.card_id, "error": str(e)})
+
+    await db.commit()
+    return {
+        "created": len(created),
+        "errors": len(errors),
+        "listings": created,
+        "error_details": errors,
+    }

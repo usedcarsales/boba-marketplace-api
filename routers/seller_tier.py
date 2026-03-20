@@ -98,7 +98,7 @@ async def update_bio(
 
     # Lancer+ only
     tier_order = list(SellerTier)
-    if tier_order.index(tier) < tier_order.index(SellerTier.LANCER):
+    if tier_order.index(tier) < tier_order.index(SellerTier.ICE):
         raise HTTPException(403, "Custom bio requires Lancer tier or higher")
 
     if len(bio) > 160:
