@@ -116,6 +116,7 @@ async def migrate_orders():
     """Add new columns to orders table for v2 transaction engine."""
     from database import engine
     migrations = [
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_fee_cents INTEGER DEFAULT 0",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_cents INTEGER DEFAULT 0",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_cents INTEGER DEFAULT 0",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS stripe_client_secret VARCHAR(500)",

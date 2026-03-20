@@ -35,52 +35,70 @@ SHIPPING_RATES = {
     "bubble_mailer": {"label": "Bubble Mailer w/ Tracking", "cents": 400, "max_value_cents": 50000},
     "box": {"label": "Small Box w/ Tracking + Insurance", "cents": 800, "max_value_cents": None},
 }
-INSURANCE_REQUIRED_ABOVE_CENTS = 5000   # $50+
-TRACKING_REQUIRED_ABOVE_CENTS = 1000   # $10+ (matches TCGPlayer)
-SIGNATURE_REQUIRED_ABOVE_CENTS = 75000 # $750+ (matches eBay seller protection)
+# Shipping thresholds — mirrors TCGPlayer exactly (from operator's screenshot)
+TRACKING_SHOULD_ABOVE_CENTS = 2000     # $20+ → tracking SHOULD be included
+TRACKING_MUST_ABOVE_CENTS = 5000       # $49.99+ → tracking MUST be included
+SIGNATURE_REQUIRED_ABOVE_CENTS = 25000 # $250+ → signature confirmation MUST
+INSURANCE_RECOMMENDED_ABOVE_CENTS = 5000  # $50+ → insurance recommended
 DISPUTE_WINDOW_DAYS = 7                # 7 days post-delivery (TCGPlayer standard)
 
 
 def calculate_fees(subtotal_cents: int) -> dict:
-    """Calculate platform fee, Stripe fee, and seller payout."""
+    """Calculate platform fee, per-order fee, Stripe fee, and seller payout."""
     platform_fee = int(subtotal_cents * settings.platform_fee_percent / 100)
+    order_fee = settings.per_order_fee_cents  # $0.25 flat
     stripe_fee = int(subtotal_cents * 0.029 + 30)  # 2.9% + 30¢
-    seller_payout = subtotal_cents - platform_fee - stripe_fee
+    total_fees = platform_fee + order_fee + stripe_fee
+    seller_payout = subtotal_cents - total_fees
     return {
         "platform_fee_cents": platform_fee,
+        "order_fee_cents": order_fee,
         "stripe_fee_cents": stripe_fee,
         "seller_payout_cents": max(seller_payout, 0),
     }
 
 
 def determine_shipping(subtotal_cents: int, method: str | None = None) -> dict:
-    """Determine shipping cost and requirements based on order value."""
-    requires_tracking = subtotal_cents >= TRACKING_REQUIRED_ABOVE_CENTS
-    requires_insurance = subtotal_cents >= INSURANCE_REQUIRED_ABOVE_CENTS
+    """Determine shipping cost and requirements based on order value.
+    
+    TCGPlayer-exact thresholds:
+    - $20+: tracking SHOULD (recommended)
+    - $49.99+: tracking MUST (required)
+    - $250+: signature confirmation MUST (required)
+    """
+    tracking_required = subtotal_cents >= TRACKING_MUST_ABOVE_CENTS
+    tracking_recommended = subtotal_cents >= TRACKING_SHOULD_ABOVE_CENTS
+    signature_required = subtotal_cents >= SIGNATURE_REQUIRED_ABOVE_CENTS
+    insurance_recommended = subtotal_cents >= INSURANCE_RECOMMENDED_ABOVE_CENTS
 
     if method and method in SHIPPING_RATES:
         rate = SHIPPING_RATES[method]
-        # Validate: can't use PWE for high-value orders
-        if rate["max_value_cents"] and subtotal_cents > rate["max_value_cents"]:
-            # Force upgrade
-            if subtotal_cents > SHIPPING_RATES["bubble_mailer"]["max_value_cents"]:
-                method = "box"
-            else:
-                method = "bubble_mailer"
+        # Validate: can't use PWE for orders requiring tracking
+        if tracking_required and method == "pwe":
+            method = "bubble_mailer"
+            rate = SHIPPING_RATES[method]
+        # Force box for signature-required orders
+        if signature_required and method != "box":
+            method = "box"
             rate = SHIPPING_RATES[method]
         return {
             "shipping_method": method,
             "shipping_cents": rate["cents"],
-            "requires_insurance": requires_insurance,
+            "requires_insurance": insurance_recommended,
+            "requires_signature": signature_required,
+            "tracking_required": tracking_required,
+            "tracking_recommended": tracking_recommended,
         }
 
-    # Auto-select based on value
-    if subtotal_cents <= 2000:
-        return {"shipping_method": "pwe", "shipping_cents": 100, "requires_insurance": False}
-    elif subtotal_cents <= 50000:
-        return {"shipping_method": "bubble_mailer", "shipping_cents": 400, "requires_insurance": requires_insurance}
+    # Auto-select based on TCGPlayer thresholds
+    if subtotal_cents >= SIGNATURE_REQUIRED_ABOVE_CENTS:
+        return {"shipping_method": "box", "shipping_cents": 800, "requires_insurance": True, "requires_signature": True, "tracking_required": True, "tracking_recommended": True}
+    elif subtotal_cents >= TRACKING_MUST_ABOVE_CENTS:
+        return {"shipping_method": "bubble_mailer", "shipping_cents": 400, "requires_insurance": insurance_recommended, "requires_signature": False, "tracking_required": True, "tracking_recommended": True}
+    elif subtotal_cents >= TRACKING_SHOULD_ABOVE_CENTS:
+        return {"shipping_method": "bubble_mailer", "shipping_cents": 400, "requires_insurance": False, "requires_signature": False, "tracking_required": False, "tracking_recommended": True}
     else:
-        return {"shipping_method": "box", "shipping_cents": 800, "requires_insurance": True}
+        return {"shipping_method": "pwe", "shipping_cents": 100, "requires_insurance": False, "requires_signature": False, "tracking_required": False, "tracking_recommended": False}
 
 
 # ─── CHECKOUT: Create order + Stripe PaymentIntent ───
@@ -174,11 +192,14 @@ async def checkout(
             subtotal_cents=subtotal,
             shipping_cents=shipping["shipping_cents"],
             platform_fee_cents=fees["platform_fee_cents"],
+            order_fee_cents=fees["order_fee_cents"],
             stripe_fee_cents=fees["stripe_fee_cents"],
             total_cents=total,
             seller_payout_cents=fees["seller_payout_cents"],
             shipping_method=shipping["shipping_method"],
-            requires_insurance=shipping["requires_insurance"],
+            requires_insurance=shipping.get("requires_insurance", False),
+            requires_signature=shipping.get("requires_signature", False),
+            tracking_required=shipping.get("tracking_required", False),
         )
 
     except HTTPException:
@@ -281,13 +302,13 @@ async def ship_order(
     if order.status != "paid":
         raise HTTPException(status_code=400, detail=f"Order must be paid before shipping (current: {order.status})")
 
-    # Validate tracking requirement
-    if order.subtotal_cents >= TRACKING_REQUIRED_ABOVE_CENTS and not data.tracking_number:
-        raise HTTPException(status_code=400, detail=f"Tracking number required for orders ${TRACKING_REQUIRED_ABOVE_CENTS/100:.0f}+")
+    # Validate tracking requirement ($50+ MUST have tracking)
+    if order.subtotal_cents >= TRACKING_MUST_ABOVE_CENTS and not data.tracking_number:
+        raise HTTPException(status_code=400, detail="Tracking required for orders $50+. Ship with USPS, UPS, or FedEx tracking.")
 
-    # Validate signature confirmation for high-value orders
+    # Validate signature confirmation ($250+ MUST have signature)
     if order.subtotal_cents >= SIGNATURE_REQUIRED_ABOVE_CENTS and not data.tracking_number:
-        raise HTTPException(status_code=400, detail=f"Tracking with signature confirmation required for orders ${SIGNATURE_REQUIRED_ABOVE_CENTS/100:.0f}+")
+        raise HTTPException(status_code=400, detail="Tracking with signature confirmation required for orders $250+.")
 
     now = datetime.now(timezone.utc)
     order.tracking_number = data.tracking_number
@@ -479,9 +500,12 @@ async def get_shipping_rates():
             },
         ],
         "rules": {
-            "tracking_required_above_cents": TRACKING_REQUIRED_ABOVE_CENTS,
-            "insurance_required_above_cents": INSURANCE_REQUIRED_ABOVE_CENTS,
+            "tracking_should_above_cents": TRACKING_SHOULD_ABOVE_CENTS,
+            "tracking_must_above_cents": TRACKING_MUST_ABOVE_CENTS,
             "signature_required_above_cents": SIGNATURE_REQUIRED_ABOVE_CENTS,
+            "insurance_recommended_above_cents": INSURANCE_RECOMMENDED_ABOVE_CENTS,
             "dispute_window_days": DISPUTE_WINDOW_DAYS,
+            "platform_fee_percent": settings.platform_fee_percent,
+            "per_order_fee_cents": settings.per_order_fee_cents,
         },
     }

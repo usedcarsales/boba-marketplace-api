@@ -25,11 +25,14 @@ class CheckoutResponse(BaseModel):
     subtotal_cents: int
     shipping_cents: int
     platform_fee_cents: int
+    order_fee_cents: int
     stripe_fee_cents: int
     total_cents: int
     seller_payout_cents: int
     shipping_method: str
     requires_insurance: bool
+    requires_signature: bool = False
+    tracking_required: bool = False
 
 
 # ─── Order Response ───

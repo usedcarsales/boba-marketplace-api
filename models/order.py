@@ -19,6 +19,7 @@ class Order(Base):
     quantity: Mapped[int] = mapped_column(Integer, default=1)
     subtotal_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     platform_fee_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    order_fee_cents: Mapped[int] = mapped_column(Integer, default=0)
     stripe_fee_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     shipping_cents: Mapped[int] = mapped_column(Integer, default=0)
     total_cents: Mapped[int] = mapped_column(Integer, nullable=False)  # subtotal + shipping

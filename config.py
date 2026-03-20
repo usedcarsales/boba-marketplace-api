@@ -35,7 +35,8 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
 
     # Platform
-    platform_fee_percent: float = 6.0
+    platform_fee_percent: float = 8.0
+    per_order_fee_cents: int = 25  # $0.25 per order
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
