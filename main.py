@@ -109,3 +109,45 @@ async def debug_db():
         results["db_error_type"] = type(e).__name__
     
     return results
+
+
+@app.post("/debug/migrate-orders")
+async def migrate_orders():
+    """Add new columns to orders table for v2 transaction engine."""
+    from database import engine
+    migrations = [
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_cents INTEGER DEFAULT 0",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_cents INTEGER DEFAULT 0",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS stripe_client_secret VARCHAR(500)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS tracking_carrier VARCHAR(50)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_method VARCHAR(50)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS requires_insurance BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS ship_to_name VARCHAR(255)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS ship_to_address1 VARCHAR(255)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS ship_to_address2 VARCHAR(255)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS ship_to_city VARCHAR(100)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS ship_to_state VARCHAR(50)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS ship_to_zip VARCHAR(20)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS ship_to_country VARCHAR(50) DEFAULT 'US'",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payout_released BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payout_released_at TIMESTAMP WITH TIME ZONE",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP WITH TIME ZONE",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS ship_by TIMESTAMP WITH TIME ZONE",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP WITH TIME ZONE",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS seller_note TEXT",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS buyer_note TEXT",
+        # Backfill total_cents for any existing orders
+        "UPDATE orders SET total_cents = subtotal_cents + COALESCE(shipping_cents, 0) WHERE total_cents = 0 OR total_cents IS NULL",
+    ]
+    results = []
+    try:
+        async with engine.begin() as conn:
+            for sql in migrations:
+                try:
+                    await conn.execute(text(sql))
+                    results.append({"sql": sql[:60] + "...", "status": "ok"})
+                except Exception as e:
+                    results.append({"sql": sql[:60] + "...", "status": f"error: {e}"})
+        return {"status": "migrated", "results": results}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}

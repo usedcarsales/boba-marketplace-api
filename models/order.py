@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -20,19 +20,53 @@ class Order(Base):
     subtotal_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     platform_fee_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     stripe_fee_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    shipping_cents: Mapped[int] = mapped_column(Integer, default=0)
+    total_cents: Mapped[int] = mapped_column(Integer, nullable=False)  # subtotal + shipping
     seller_payout_cents: Mapped[int] = mapped_column(Integer, nullable=False)
 
     # Stripe
     stripe_payment_intent_id: Mapped[str | None] = mapped_column(String(255))
     stripe_transfer_id: Mapped[str | None] = mapped_column(String(255))
+    stripe_client_secret: Mapped[str | None] = mapped_column(String(500))
 
     # Status tracking
+    # pending → paid → shipped → delivered → completed
+    # pending → cancelled
+    # paid → shipped → disputed → refunded
+    # paid → ship_deadline_missed → auto_cancelled
     status: Mapped[str] = mapped_column(
-        String(30), default="pending"
-    )  # pending, paid, shipped, delivered, disputed, refunded
+        String(30), default="pending", index=True
+    )
+
+    # Shipping
     tracking_number: Mapped[str | None] = mapped_column(String(255))
+    tracking_carrier: Mapped[str | None] = mapped_column(String(50))  # usps, ups, fedex
+    shipping_method: Mapped[str | None] = mapped_column(String(50))  # pwe, bubble_mailer, box
+    requires_insurance: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Buyer info for seller
+    ship_to_name: Mapped[str | None] = mapped_column(String(255))
+    ship_to_address1: Mapped[str | None] = mapped_column(String(255))
+    ship_to_address2: Mapped[str | None] = mapped_column(String(255))
+    ship_to_city: Mapped[str | None] = mapped_column(String(100))
+    ship_to_state: Mapped[str | None] = mapped_column(String(50))
+    ship_to_zip: Mapped[str | None] = mapped_column(String(20))
+    ship_to_country: Mapped[str | None] = mapped_column(String(50), default="US")
+
+    # Payout tracking
+    payout_released: Mapped[bool] = mapped_column(Boolean, default=False)
+    payout_released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Timestamps
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     shipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ship_by: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # 48hr deadline
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Notes
+    seller_note: Mapped[str | None] = mapped_column(Text)
+    buyer_note: Mapped[str | None] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
