@@ -229,7 +229,7 @@ async def migrate_v3():
 async def migrate_v4():
     """Add discord_id and google_id columns to users table for OAuth."""
     try:
-        from database import async_engine
+        from database import engine
         from sqlalchemy import text
         statements = [
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS discord_id VARCHAR(50) UNIQUE",
@@ -238,7 +238,7 @@ async def migrate_v4():
             "CREATE INDEX IF NOT EXISTS ix_users_google_id ON users (google_id)",
         ]
         results = []
-        async with async_engine.begin() as conn:
+        async with engine.begin() as conn:
             for sql in statements:
                 try:
                     await conn.execute(text(sql))
