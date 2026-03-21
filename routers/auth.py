@@ -1,10 +1,13 @@
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 import bcrypt
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -183,3 +186,224 @@ async def logout():
     # JWT is stateless — client should discard tokens
     # For production, implement token blacklisting with Redis
     return {"message": "Logged out successfully"}
+
+
+# ─── Discord OAuth ──────────────────────────────────────────────
+
+DISCORD_AUTH_URL = "https://discord.com/api/oauth2/authorize"
+DISCORD_TOKEN_URL = "https://discord.com/api/oauth2/token"
+DISCORD_USER_URL = "https://discord.com/api/users/@me"
+
+
+@router.get("/discord/login")
+async def discord_login():
+    """Redirect user to Discord OAuth consent screen."""
+    params = {
+        "client_id": settings.discord_client_id,
+        "redirect_uri": settings.discord_redirect_uri,
+        "response_type": "code",
+        "scope": "identify email",
+    }
+    return RedirectResponse(f"{DISCORD_AUTH_URL}?{urlencode(params)}")
+
+
+@router.get("/discord/callback")
+async def discord_callback(code: str = Query(...), db: AsyncSession = Depends(get_db)):
+    """Exchange Discord code for tokens, create/login user, redirect to frontend."""
+    # Exchange code for Discord access token
+    async with httpx.AsyncClient() as client:
+        token_resp = await client.post(
+            DISCORD_TOKEN_URL,
+            data={
+                "client_id": settings.discord_client_id,
+                "client_secret": settings.discord_client_secret,
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": settings.discord_redirect_uri,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if token_resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to exchange Discord code")
+        token_data = token_resp.json()
+
+        # Get Discord user info
+        user_resp = await client.get(
+            DISCORD_USER_URL,
+            headers={"Authorization": f"Bearer {token_data['access_token']}"},
+        )
+        if user_resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to fetch Discord user")
+        discord_user = user_resp.json()
+
+    discord_id = discord_user["id"]
+    email = discord_user.get("email")
+    username = discord_user.get("username", f"discord_{discord_id}")
+    display_name = discord_user.get("global_name") or username
+    avatar_hash = discord_user.get("avatar")
+    avatar_url = f"https://cdn.discordapp.com/avatars/{discord_id}/{avatar_hash}.png" if avatar_hash else None
+
+    # Find existing user by discord_id or email
+    user = None
+    result = await db.execute(select(User).where(User.discord_id == discord_id))
+    user = result.scalar_one_or_none()
+
+    if not user and email:
+        result = await db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+        if user:
+            user.discord_id = discord_id  # Link Discord to existing account
+
+    if not user:
+        # Create new user
+        # Ensure unique username
+        base_username = username
+        suffix = 1
+        while True:
+            result = await db.execute(select(User).where(User.username == username))
+            if not result.scalar_one_or_none():
+                break
+            username = f"{base_username}_{suffix}"
+            suffix += 1
+
+        user = User(
+            email=email or f"{discord_id}@discord.oauth",
+            username=username,
+            display_name=display_name,
+            avatar_url=avatar_url,
+            discord_id=discord_id,
+            hashed_password=None,
+        )
+        db.add(user)
+        await db.flush()
+    else:
+        # Update avatar/display name
+        if avatar_url:
+            user.avatar_url = avatar_url
+        if display_name:
+            user.display_name = display_name
+
+    await db.commit()
+
+    # Generate JWT tokens
+    access_token = create_access_token(data={"sub": str(user.id)})
+    refresh_token = create_refresh_token(data={"sub": str(user.id)})
+
+    # Redirect to frontend with tokens
+    frontend_url = settings.frontend_url
+    params = urlencode({
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "user_id": str(user.id),
+        "username": user.username,
+        "display_name": user.display_name or user.username,
+        "avatar_url": user.avatar_url or "",
+    })
+    return RedirectResponse(f"{frontend_url}/auth/callback?{params}")
+
+
+# ─── Google OAuth ──────────────────────────────────────────────
+
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USER_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
+
+
+@router.get("/google/login")
+async def google_login():
+    """Redirect user to Google OAuth consent screen."""
+    params = {
+        "client_id": settings.google_client_id,
+        "redirect_uri": settings.google_redirect_uri,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    return RedirectResponse(f"{GOOGLE_AUTH_URL}?{urlencode(params)}")
+
+
+@router.get("/google/callback")
+async def google_callback(code: str = Query(...), db: AsyncSession = Depends(get_db)):
+    """Exchange Google code for tokens, create/login user, redirect to frontend."""
+    async with httpx.AsyncClient() as client:
+        token_resp = await client.post(
+            GOOGLE_TOKEN_URL,
+            data={
+                "client_id": settings.google_client_id,
+                "client_secret": settings.google_client_secret,
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": settings.google_redirect_uri,
+            },
+        )
+        if token_resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to exchange Google code")
+        token_data = token_resp.json()
+
+        user_resp = await client.get(
+            GOOGLE_USER_URL,
+            headers={"Authorization": f"Bearer {token_data['access_token']}"},
+        )
+        if user_resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to fetch Google user")
+        google_user = user_resp.json()
+
+    google_id = google_user["id"]
+    email = google_user.get("email")
+    display_name = google_user.get("name", "")
+    avatar_url = google_user.get("picture")
+
+    # Find existing user by google_id or email
+    user = None
+    result = await db.execute(select(User).where(User.google_id == google_id))
+    user = result.scalar_one_or_none()
+
+    if not user and email:
+        result = await db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+        if user:
+            user.google_id = google_id
+
+    if not user:
+        username = email.split("@")[0] if email else f"google_{google_id}"
+        base_username = username
+        suffix = 1
+        while True:
+            result = await db.execute(select(User).where(User.username == username))
+            if not result.scalar_one_or_none():
+                break
+            username = f"{base_username}_{suffix}"
+            suffix += 1
+
+        user = User(
+            email=email or f"{google_id}@google.oauth",
+            username=username,
+            display_name=display_name,
+            avatar_url=avatar_url,
+            google_id=google_id,
+            hashed_password=None,
+        )
+        db.add(user)
+        await db.flush()
+    else:
+        if avatar_url:
+            user.avatar_url = avatar_url
+        if display_name:
+            user.display_name = display_name
+
+    await db.commit()
+
+    access_token = create_access_token(data={"sub": str(user.id)})
+    refresh_token = create_refresh_token(data={"sub": str(user.id)})
+
+    frontend_url = settings.frontend_url
+    params = urlencode({
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "user_id": str(user.id),
+        "username": user.username,
+        "display_name": user.display_name or user.username,
+        "avatar_url": user.avatar_url or "",
+    })
+    return RedirectResponse(f"{frontend_url}/auth/callback?{params}")

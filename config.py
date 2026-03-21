@@ -18,6 +18,16 @@ class Settings(BaseSettings):
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
 
+    # Discord OAuth
+    discord_client_id: str = ""
+    discord_client_secret: str = ""
+    discord_redirect_uri: str = "https://boba-api.onrender.com/api/auth/discord/callback"
+
+    # Google OAuth
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = "https://boba-api.onrender.com/api/auth/google/callback"
+
     # Cloudflare R2
     r2_account_id: str = ""
     r2_access_key_id: str = ""

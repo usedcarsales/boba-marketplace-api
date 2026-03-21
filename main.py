@@ -223,3 +223,28 @@ async def migrate_v3():
         return {"status": "migrated", "count": len(results), "results": results}
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+
+@app.post("/debug/migrate-v4")
+async def migrate_v4():
+    """Add discord_id and google_id columns to users table for OAuth."""
+    try:
+        from database import async_engine
+        from sqlalchemy import text
+        statements = [
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS discord_id VARCHAR(50) UNIQUE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR(100) UNIQUE",
+            "CREATE INDEX IF NOT EXISTS ix_users_discord_id ON users (discord_id)",
+            "CREATE INDEX IF NOT EXISTS ix_users_google_id ON users (google_id)",
+        ]
+        results = []
+        async with async_engine.begin() as conn:
+            for sql in statements:
+                try:
+                    await conn.execute(text(sql))
+                    results.append({"sql": sql, "status": "ok"})
+                except Exception as e:
+                    results.append({"sql": sql, "status": f"error: {e}"})
+        return {"status": "migrated", "count": len(results), "results": results}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
