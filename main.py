@@ -260,10 +260,9 @@ async def migrate_v5_sealed():
         
         # Create table
         create_sql = """
-        CREATE EXTENSION IF NOT EXISTS pgcrypto;
         DROP TABLE IF EXISTS sealed_products;
         CREATE TABLE sealed_products (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            id UUID PRIMARY KEY,
             name VARCHAR(255) NOT NULL,
             set_name VARCHAR(100) NOT NULL,
             product_type VARCHAR(50) NOT NULL,
@@ -281,40 +280,35 @@ async def migrate_v5_sealed():
         )
         """
         
-        seed_sql = """
-        INSERT INTO sealed_products (name, set_name, product_type, year, msrp_cents, description, cards_per_pack, packs_per_box, last_sale_price, avg_price_30d, total_sales)
-        VALUES
-        -- Alpha Edition
-        ('Alpha Edition Hobby Box', 'Alpha Edition', 'hobby_box', 2024, 14999, '24 packs per box. The original BoBA set featuring 200+ base cards, Battlefoils, and Superfoils. Chase the 1/1 Superfoils!', 10, 24, 189.99, 175.00, 85),
-        ('Alpha Edition Booster Pack', 'Alpha Edition', 'booster_pack', 2024, 699, '10 cards per pack. Pull Heroes, Plays, and chase rare Battlefoil parallels from the original Alpha Edition set.', 10, NULL, 8.99, 7.50, 320),
-        ('Alpha Edition Booster Box', 'Alpha Edition', 'booster_box', 2024, 12999, '24 packs of Alpha Edition. Guaranteed hits in every box.', 10, 24, 159.99, 150.00, 45),
-        
-        -- Griffey Edition
-        ('Griffey Edition Hobby Box', 'Griffey Edition', 'hobby_box', 2024, 17999, 'The massive 10,000+ card Griffey Edition set. Hobby boxes include exclusive Battlefoil parallels and guaranteed Superfoil hits.', 10, 24, 249.99, 220.00, 62),
-        ('Griffey Edition Booster Pack', 'Griffey Edition', 'booster_pack', 2024, 699, '10 cards per pack from the Griffey Edition. Features Ken Griffey Jr. themed Heroes and exclusive parallels.', 10, NULL, 9.99, 8.00, 280),
-        ('Griffey Edition Booster Box', 'Griffey Edition', 'booster_box', 2024, 14999, '24 packs of Griffey Edition boosters. The largest BoBA set with 10,000+ cards to collect.', 10, 24, 199.99, 185.00, 38),
-        ('Griffey Edition Jumbo Pack', 'Griffey Edition', 'jumbo_pack', 2024, 1999, 'Oversized pack with 30 cards including guaranteed Battlefoil parallel. Griffey Edition exclusive.', 30, NULL, 24.99, 22.00, 95),
-        
-        -- Alpha Update
-        ('Alpha Update Hobby Box', 'Alpha Update', 'hobby_box', 2025, 14999, 'The latest expansion with new Heroes, Plays, and updated game mechanics. 24 packs per hobby box.', 10, 24, 169.99, 160.00, 40),
-        ('Alpha Update Booster Pack', 'Alpha Update', 'booster_pack', 2025, 699, '10 cards per pack from Alpha Update. New weapons, new abilities, new chase cards.', 10, NULL, 7.99, 7.00, 200),
-        ('Alpha Update Booster Box', 'Alpha Update', 'booster_box', 2025, 12999, '24 packs of Alpha Update. Continues the Alpha Edition story with new content.', 10, 24, 149.99, 140.00, 30),
-        
-        -- Special Products
-        ('Blast Box', 'Alpha Blast', 'blast_box', 2024, 4999, 'Exclusive Blast Box containing HTD (Blast Play) cards. Limited availability — the only way to pull Alpha Blast HTD cards.', 15, NULL, 79.99, 65.00, 55),
-        ('Battle Trainer Kit', 'Battle Trainer Kit', 'starter_kit', 2024, 2499, 'Two ready-to-play 60-card decks with learn-to-play guide. Perfect for new players. Includes exclusive Trainer Kit cards.', 60, 2, 29.99, 28.00, 120),
-        ('National 2024 Starter Set', 'National 24 Starter Set', 'starter_kit', 2024, 1999, 'Exclusive starter set from the 2024 National Sports Card Convention. Limited edition with convention-exclusive cards.', 30, NULL, 39.99, 35.00, 25),
-        ('Big League Chew Promo Box', 'Big League Chew', 'promo_box', 2024, 999, 'Special collaboration with Big League Chew. Includes exclusive gum-themed BoBA cards and actual Big League Chew gum!', 5, NULL, 14.99, 12.00, 150),
-        
-        -- Cases
-        ('Alpha Edition Hobby Case', 'Alpha Edition', 'hobby_case', 2024, 84999, '6 Hobby Boxes per case (144 packs total). Best value for ripping Alpha Edition. Case hits guaranteed.', 10, 144, 999.99, 950.00, 12),
-        ('Griffey Edition Hobby Case', 'Griffey Edition', 'hobby_case', 2024, 99999, '6 Hobby Boxes per case (144 packs total). The ultimate Griffey Edition experience.', 10, 144, 1299.99, 1200.00, 8)
-        ON CONFLICT DO NOTHING
-        """
+        # Generate UUIDs in Python since Neon's gen_random_uuid() has issues
+        import uuid
+        products = [
+            ('Alpha Edition Hobby Box', 'Alpha Edition', 'hobby_box', 2024, 14999, '24 packs per box. The original BoBA set featuring 200+ base cards, Battlefoils, and Superfoils. Chase the 1/1 Superfoils!', 10, 24, 189.99, 175.00, 85),
+            ('Alpha Edition Booster Pack', 'Alpha Edition', 'booster_pack', 2024, 699, '10 cards per pack. Pull Heroes, Plays, and chase rare Battlefoil parallels from the original Alpha Edition set.', 10, None, 8.99, 7.50, 320),
+            ('Alpha Edition Booster Box', 'Alpha Edition', 'booster_box', 2024, 12999, '24 packs of Alpha Edition. Guaranteed hits in every box.', 10, 24, 159.99, 150.00, 45),
+            ('Griffey Edition Hobby Box', 'Griffey Edition', 'hobby_box', 2024, 17999, 'The massive 10,000+ card Griffey Edition set. Hobby boxes include exclusive Battlefoil parallels and guaranteed Superfoil hits.', 10, 24, 249.99, 220.00, 62),
+            ('Griffey Edition Booster Pack', 'Griffey Edition', 'booster_pack', 2024, 699, '10 cards per pack from the Griffey Edition. Features Ken Griffey Jr. themed Heroes and exclusive parallels.', 10, None, 9.99, 8.00, 280),
+            ('Griffey Edition Booster Box', 'Griffey Edition', 'booster_box', 2024, 14999, '24 packs of Griffey Edition boosters. The largest BoBA set with 10,000+ cards to collect.', 10, 24, 199.99, 185.00, 38),
+            ('Griffey Edition Jumbo Pack', 'Griffey Edition', 'jumbo_pack', 2024, 1999, 'Oversized pack with 30 cards including guaranteed Battlefoil parallel. Griffey Edition exclusive.', 30, None, 24.99, 22.00, 95),
+            ('Alpha Update Hobby Box', 'Alpha Update', 'hobby_box', 2025, 14999, 'The latest expansion with new Heroes, Plays, and updated game mechanics. 24 packs per hobby box.', 10, 24, 169.99, 160.00, 40),
+            ('Alpha Update Booster Pack', 'Alpha Update', 'booster_pack', 2025, 699, '10 cards per pack from Alpha Update. New weapons, new abilities, new chase cards.', 10, None, 7.99, 7.00, 200),
+            ('Alpha Update Booster Box', 'Alpha Update', 'booster_box', 2025, 12999, '24 packs of Alpha Update. Continues the Alpha Edition story with new content.', 10, 24, 149.99, 140.00, 30),
+            ('Blast Box', 'Alpha Blast', 'blast_box', 2024, 4999, 'Exclusive Blast Box containing HTD (Blast Play) cards. Limited availability — the only way to pull Alpha Blast HTD cards.', 15, None, 79.99, 65.00, 55),
+            ('Battle Trainer Kit', 'Battle Trainer Kit', 'starter_kit', 2024, 2499, 'Two ready-to-play 60-card decks with learn-to-play guide. Perfect for new players. Includes exclusive Trainer Kit cards.', 60, 2, 29.99, 28.00, 120),
+            ('National 2024 Starter Set', 'National 24 Starter Set', 'starter_kit', 2024, 1999, 'Exclusive starter set from the 2024 National Sports Card Convention. Limited edition with convention-exclusive cards.', 30, None, 39.99, 35.00, 25),
+            ('Big League Chew Promo Box', 'Big League Chew', 'promo_box', 2024, 999, 'Special collaboration with Big League Chew. Includes exclusive gum-themed BoBA cards and actual Big League Chew gum!', 5, None, 14.99, 12.00, 150),
+            ('Alpha Edition Hobby Case', 'Alpha Edition', 'hobby_case', 2024, 84999, '6 Hobby Boxes per case (144 packs total). Best value for ripping Alpha Edition. Case hits guaranteed.', 10, 144, 999.99, 950.00, 12),
+            ('Griffey Edition Hobby Case', 'Griffey Edition', 'hobby_case', 2024, 99999, '6 Hobby Boxes per case (144 packs total). The ultimate Griffey Edition experience.', 10, 144, 1299.99, 1200.00, 8),
+        ]
+        seed_sql = text("""INSERT INTO sealed_products (id, name, set_name, product_type, year, msrp_cents, description, cards_per_pack, packs_per_box, last_sale_price, avg_price_30d, total_sales)
+            VALUES (:id, :name, :set_name, :product_type, :year, :msrp_cents, :description, :cards_per_pack, :packs_per_box, :last_sale_price, :avg_price_30d, :total_sales)""")
         
         results = []
         async with engine.begin() as conn:
-            await conn.execute(text(create_sql))
+            for stmt in create_sql.strip().split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    await conn.execute(text(stmt))
             results.append({"step": "create_table", "status": "ok"})
             
             await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_sealed_name ON sealed_products (name)"))
@@ -322,7 +316,13 @@ async def migrate_v5_sealed():
             await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_sealed_type ON sealed_products (product_type)"))
             results.append({"step": "indexes", "status": "ok"})
             
-            await conn.execute(text(seed_sql))
+            for p in products:
+                await conn.execute(seed_sql, {
+                    "id": str(uuid.uuid4()), "name": p[0], "set_name": p[1],
+                    "product_type": p[2], "year": p[3], "msrp_cents": p[4],
+                    "description": p[5], "cards_per_pack": p[6], "packs_per_box": p[7],
+                    "last_sale_price": p[8], "avg_price_30d": p[9], "total_sales": p[10],
+                })
             
             count = (await conn.execute(text("SELECT COUNT(*) FROM sealed_products"))).scalar()
             results.append({"step": "seed", "status": "ok", "count": count})
