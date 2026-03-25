@@ -260,7 +260,9 @@ async def migrate_v5_sealed():
         
         # Create table
         create_sql = """
-        CREATE TABLE IF NOT EXISTS sealed_products (
+        CREATE EXTENSION IF NOT EXISTS pgcrypto;
+        DROP TABLE IF EXISTS sealed_products;
+        CREATE TABLE sealed_products (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             name VARCHAR(255) NOT NULL,
             set_name VARCHAR(100) NOT NULL,
