@@ -6,7 +6,7 @@ from sqlalchemy import text
 
 from config import get_settings
 from database import init_db
-from routers import auth, cards, listings, orders, sealed, seller, seller_tier, users, webhooks, feedback
+from routers import auth, cards, listings, orders, sealed, seller, seller_tier, users, webhooks, feedback, admin_dashboard
 
 settings = get_settings()
 
@@ -45,6 +45,7 @@ app.include_router(seller.router)
 app.include_router(webhooks.router)
 app.include_router(seller_tier.router)
 app.include_router(feedback.router)
+app.include_router(admin_dashboard.router)
 app.include_router(sealed.router)
 
 
